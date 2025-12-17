@@ -30,6 +30,9 @@ func (m *Model) View() string {
 	if m.showConfirm {
 		return m.renderWithOverlay(b.String(), m.renderConfirmDialog())
 	}
+	if m.mode == ModeCreateTicket {
+		return m.renderWithOverlay(b.String(), m.renderCreateTicketForm())
+	}
 
 	// Status bar
 	b.WriteString("\n")
@@ -59,23 +62,52 @@ func (m *Model) renderHeader() string {
 
 // renderBoard renders the kanban columns
 func (m *Model) renderBoard() string {
-	columnWidth := m.config.UI.ColumnWidth
-	if columnWidth <= 0 {
-		columnWidth = 40
+	columnWidth := m.calcColumnWidth()
+	visibleCols := m.visibleColumnCount(columnWidth)
+
+	startCol := m.scrollOffset
+	endCol := startCol + visibleCols
+	if endCol > len(m.board.Columns) {
+		endCol = len(m.board.Columns)
 	}
 
-	// Render each column
+	numVisible := endCol - startCol
+	baseWidth, remainder := m.distributeWidth(numVisible)
+
 	var columns []string
-	for i, col := range m.board.Columns {
+
+	if startCol > 0 {
+		indicator := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6c7086")).
+			Render("◀")
+		columns = append(columns, indicator)
+	}
+
+	for i := startCol; i < endCol; i++ {
+		col := m.board.Columns[i]
 		isActive := i == m.activeColumn
-		columns = append(columns, m.renderColumn(col, m.columnTickets[i], isActive, columnWidth))
+		isLast := i == endCol-1
+
+		colWidth := baseWidth
+		if i-startCol < remainder {
+			colWidth++
+		}
+
+		columns = append(columns, m.renderColumn(col, m.columnTickets[i], isActive, colWidth, isLast))
+	}
+
+	if endCol < len(m.board.Columns) {
+		indicator := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6c7086")).
+			Render("▶")
+		columns = append(columns, indicator)
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, columns...)
 }
 
 // renderColumn renders a single kanban column
-func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive bool, width int) string {
+func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive bool, width int, isLast bool) string {
 	// Column header
 	headerColor := lipgloss.Color(col.Color)
 	header := lipgloss.NewStyle().
@@ -92,7 +124,7 @@ func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive
 	var ticketViews []string
 	for i, ticket := range tickets {
 		isSelected := isActive && i == m.activeTicket
-		ticketViews = append(ticketViews, m.renderTicket(ticket, isSelected, width-4))
+		ticketViews = append(ticketViews, m.renderTicket(ticket, isSelected, width-4, col.Color))
 	}
 
 	ticketsView := strings.Join(ticketViews, "\n")
@@ -108,18 +140,21 @@ func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive
 		borderColor = headerColor
 	}
 
-	return lipgloss.NewStyle().
+	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(width).
-		Padding(0, 1).
-		MarginRight(1).
-		Render(content)
+		Padding(0, 1)
+
+	if !isLast {
+		style = style.MarginRight(1)
+	}
+
+	return style.Render(content)
 }
 
 // renderTicket renders a single ticket card
-func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int) string {
-	// Agent status indicator
+func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int, columnColor string) string {
 	var statusIcon string
 	switch ticket.AgentStatus {
 	case board.AgentIdle:
@@ -135,36 +170,29 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int) s
 		statusIcon = agentErrorStyle.Render("✗")
 	}
 
-	// Session indicator
 	sessionIndicator := ""
 	if ticket.TmuxSession != "" {
-		sessionIndicator = "▶"
+		sessionIndicator = "▶ "
 	}
 
-	// Title line
 	idStr := dimStyle.Render(fmt.Sprintf("#%s", string(ticket.ID)[:4]))
-	titleLine := fmt.Sprintf("%s%s %s %s", sessionIndicator, idStr, ticket.Title, statusIcon)
+	headerLine := fmt.Sprintf("%s%s %s", sessionIndicator, idStr, statusIcon)
 
-	// Truncate if needed
-	if lipgloss.Width(titleLine) > width {
-		titleLine = titleLine[:width-3] + "..."
-	}
+	titleStyle := lipgloss.NewStyle().Width(width).Inline(false)
+	wrappedTitle := titleStyle.Render(ticket.Title)
 
-	// Status line
 	statusLine := ""
 	if ticket.AgentStatus != board.AgentNone {
 		statusLine = dimStyle.Render(string(ticket.AgentStatus))
 	}
 
-	// Labels
 	var labelParts []string
 	for _, label := range ticket.Labels {
 		labelParts = append(labelParts, labelStyle.Render(label))
 	}
 	labelsLine := strings.Join(labelParts, " ")
 
-	// Combine lines
-	lines := []string{titleLine}
+	lines := []string{headerLine, wrappedTitle}
 	if statusLine != "" {
 		lines = append(lines, statusLine)
 	}
@@ -175,9 +203,15 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int) s
 	content := strings.Join(lines, "\n")
 
 	// Card style
-	cardStyle := ticketCardStyle.Copy().Width(width)
+	borderColor := lipgloss.Color(columnColor)
+	cardStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
+		MarginBottom(1).
+		Width(width)
 	if isSelected {
-		cardStyle = ticketCardSelectedStyle.Copy().Width(width)
+		cardStyle = cardStyle.Border(lipgloss.DoubleBorder())
 	}
 
 	return cardStyle.Render(content)
@@ -186,10 +220,8 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int) s
 // renderStatusBar renders the bottom status bar
 func (m *Model) renderStatusBar() string {
 	modeStr := modeStyle.Render(string(m.mode))
+	hints := dimStyle.Render("h/l: columns │ n: new │ Space: move")
 
-	hints := dimStyle.Render("j/k: navigate │ h/l: columns │ Enter: attach │ n: new │ Space: move")
-
-	// Notification
 	notif := ""
 	if m.notification != "" {
 		notif = notificationStyle.Render(m.notification)
@@ -243,6 +275,22 @@ func (m *Model) renderConfirmDialog() string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#f38ba8")).
+		Padding(1, 2).
+		Render(content)
+}
+
+func (m *Model) renderCreateTicketForm() string {
+	content := fmt.Sprintf(`
+  New Ticket
+
+  Title: %s
+
+  [Enter] Create    [Esc] Cancel
+`, m.titleInput.View())
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#a6e3a1")).
 		Padding(1, 2).
 		Render(content)
 }

@@ -21,12 +21,17 @@ func Run(cfg *config.Config, boardPath string) error {
 		return err
 	}
 
+	boardDir, err := boardsDir()
+	if err != nil {
+		return err
+	}
+
 	// Initialize managers
 	agentMgr := agent.NewManager(cfg)
 	worktreeMgr := git.NewWorktreeManager(b.RepoPath, b.Settings.WorktreeBase)
 
 	// Create the TUI model
-	model := ui.NewModel(cfg, b, agentMgr, worktreeMgr)
+	model := ui.NewModel(cfg, b, boardDir, agentMgr, worktreeMgr)
 
 	// Run the Bubbletea program
 	p := tea.NewProgram(model, tea.WithAltScreen())

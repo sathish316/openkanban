@@ -2,8 +2,10 @@ package ui
 
 import (
 	"os/exec"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/techdufus/openkanban/internal/agent"
 	"github.com/techdufus/openkanban/internal/board"
@@ -15,11 +17,17 @@ import (
 type Mode string
 
 const (
-	ModeNormal  Mode = "NORMAL"
-	ModeInsert  Mode = "INSERT"
-	ModeCommand Mode = "COMMAND"
-	ModeHelp    Mode = "HELP"
-	ModeConfirm Mode = "CONFIRM"
+	ModeNormal       Mode = "NORMAL"
+	ModeInsert       Mode = "INSERT"
+	ModeCommand      Mode = "COMMAND"
+	ModeHelp         Mode = "HELP"
+	ModeConfirm      Mode = "CONFIRM"
+	ModeCreateTicket Mode = "CREATE"
+)
+
+const (
+	minColumnWidth = 20
+	columnOverhead = 5 // border (2) + padding (2) + margin (1)
 )
 
 // Model is the main Bubbletea model
@@ -28,7 +36,8 @@ type Model struct {
 	config *config.Config
 
 	// Data
-	board *board.Board
+	board    *board.Board
+	boardDir string
 
 	// Managers
 	agentMgr    *agent.Manager
@@ -41,6 +50,7 @@ type Model struct {
 	width          int
 	height         int
 	animationFrame int
+	scrollOffset   int
 
 	// Cached column tickets
 	columnTickets [][]*board.Ticket
@@ -51,19 +61,29 @@ type Model struct {
 	confirmMsg  string
 	confirmFn   func() tea.Cmd
 
+	// Create ticket form
+	titleInput textinput.Model
+
 	// Error/notification
 	notification string
 	notifyTime   time.Time
 }
 
 // NewModel creates a new UI model
-func NewModel(cfg *config.Config, b *board.Board, agentMgr *agent.Manager, worktreeMgr *git.WorktreeManager) *Model {
+func NewModel(cfg *config.Config, b *board.Board, boardDir string, agentMgr *agent.Manager, worktreeMgr *git.WorktreeManager) *Model {
+	ti := textinput.New()
+	ti.Placeholder = "Enter ticket title..."
+	ti.CharLimit = 100
+	ti.Width = 40
+
 	m := &Model{
 		config:      cfg,
 		board:       b,
+		boardDir:    boardDir,
 		agentMgr:    agentMgr,
 		worktreeMgr: worktreeMgr,
 		mode:        ModeNormal,
+		titleInput:  ti,
 	}
 	m.refreshColumnTickets()
 	return m
@@ -118,6 +138,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeNormal
 		m.showHelp = false
 		m.showConfirm = false
+		m.titleInput.Blur()
 		return m, nil
 	case "?":
 		m.showHelp = !m.showHelp
@@ -140,6 +161,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNormalMode(msg)
 	case ModeCommand:
 		return m.handleCommandMode(msg)
+	case ModeCreateTicket:
+		return m.handleCreateTicketMode(msg)
 	}
 
 	return m, nil
@@ -215,6 +238,34 @@ func (m *Model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) handleCreateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		title := strings.TrimSpace(m.titleInput.Value())
+		if title == "" {
+			m.notify("Title cannot be empty")
+			return m, nil
+		}
+		ticket := board.NewTicket(title)
+		ticket.Status = m.board.Columns[m.activeColumn].Status
+		m.board.AddTicket(ticket)
+		m.refreshColumnTickets()
+		m.saveBoard()
+		m.mode = ModeNormal
+		m.titleInput.Blur()
+		m.notify("Created: " + title)
+		return m, nil
+	case "esc":
+		m.mode = ModeNormal
+		m.titleInput.Blur()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.titleInput, cmd = m.titleInput.Update(msg)
+	return m, cmd
+}
+
 // Navigation helpers
 func (m *Model) moveColumn(delta int) {
 	m.activeColumn += delta
@@ -225,6 +276,72 @@ func (m *Model) moveColumn(delta int) {
 		m.activeColumn = len(m.board.Columns) - 1
 	}
 	m.activeTicket = 0
+	m.ensureColumnVisible()
+}
+
+func (m *Model) ensureColumnVisible() {
+	colWidth := m.calcColumnWidth()
+	visibleCols := m.visibleColumnCount(colWidth)
+
+	if m.activeColumn < m.scrollOffset {
+		m.scrollOffset = m.activeColumn
+	} else if m.activeColumn >= m.scrollOffset+visibleCols {
+		m.scrollOffset = m.activeColumn - visibleCols + 1
+	}
+
+	maxOffset := len(m.board.Columns) - visibleCols
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+}
+
+func (m *Model) calcColumnWidth() int {
+	if m.width == 0 || len(m.board.Columns) == 0 {
+		return minColumnWidth
+	}
+
+	numCols := len(m.board.Columns)
+	totalOverhead := numCols * columnOverhead
+	colWidth := (m.width - totalOverhead) / numCols
+
+	if colWidth < minColumnWidth {
+		colWidth = minColumnWidth
+	}
+	return colWidth
+}
+
+func (m *Model) visibleColumnCount(colWidth int) int {
+	if m.width == 0 {
+		return len(m.board.Columns)
+	}
+	visible := m.width / (colWidth + columnOverhead)
+	if visible < 1 {
+		visible = 1
+	}
+	if visible > len(m.board.Columns) {
+		visible = len(m.board.Columns)
+	}
+	return visible
+}
+
+func (m *Model) distributeWidth(numCols int) (baseWidth, remainder int) {
+	if numCols == 0 || m.width == 0 {
+		return minColumnWidth, 0
+	}
+	// lipgloss Width() includes padding, so only border (2) and margin (1) are outside
+	borders := numCols * 2
+	margins := numCols - 1
+	available := m.width - borders - margins
+	baseWidth = available / numCols
+	remainder = available % numCols
+	if baseWidth < minColumnWidth {
+		baseWidth = minColumnWidth
+		remainder = 0
+	}
+	return baseWidth, remainder
 }
 
 func (m *Model) moveTicket(delta int) {
@@ -246,12 +363,10 @@ func (m *Model) moveTicket(delta int) {
 
 // Action implementations
 func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
-	// TODO: Open new ticket form
-	ticket := board.NewTicket("New ticket")
-	m.board.AddTicket(ticket)
-	m.refreshColumnTickets()
-	m.notify("Created new ticket")
-	return m, nil
+	m.mode = ModeCreateTicket
+	m.titleInput.Reset()
+	m.titleInput.Focus()
+	return m, m.titleInput.Cursor.BlinkCmd()
 }
 
 func (m *Model) attachToAgent() (tea.Model, tea.Cmd) {
@@ -279,6 +394,7 @@ func (m *Model) confirmDeleteTicket() (tea.Model, tea.Cmd) {
 	m.confirmFn = func() tea.Cmd {
 		m.board.DeleteTicket(ticket.ID)
 		m.refreshColumnTickets()
+		m.saveBoard()
 		m.notify("Deleted ticket")
 		return nil
 	}
@@ -299,6 +415,7 @@ func (m *Model) quickMoveTicket() (tea.Model, tea.Cmd) {
 
 	m.board.MoveTicket(ticket.ID, nextStatus)
 	m.refreshColumnTickets()
+	m.saveBoard()
 	m.notify("Moved to " + string(nextStatus))
 
 	return m, nil
@@ -341,6 +458,7 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.saveBoard()
 	m.notify("Spawned " + agentType + " agent")
 	return m, nil
 }
@@ -356,6 +474,7 @@ func (m *Model) stopAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.saveBoard()
 	m.notify("Agent stopped")
 	return m, nil
 }
@@ -393,6 +512,12 @@ func (m *Model) nextStatus(current board.TicketStatus) board.TicketStatus {
 func (m *Model) notify(msg string) {
 	m.notification = msg
 	m.notifyTime = time.Now()
+}
+
+func (m *Model) saveBoard() {
+	if err := m.board.Save(m.boardDir); err != nil {
+		m.notify("Failed to save: " + err.Error())
+	}
 }
 
 // Messages
