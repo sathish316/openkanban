@@ -69,10 +69,8 @@ func (m *Model) renderHeader() string {
 			workingCount++
 			continue
 		}
-		sessionID := m.getAgentSessionID(ticket)
-		status := m.statusDetector.DetectStatus(ticket.AgentType, sessionID, true)
 
-		switch status {
+		switch ticket.AgentStatus {
 		case board.AgentWorking:
 			workingCount++
 		case board.AgentWaiting:
@@ -274,18 +272,9 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int, c
 	pane, hasPane := m.panes[ticket.ID]
 	isRunning := hasPane && pane.Running()
 
-	var effectiveStatus board.AgentStatus
-	if hasPane {
-		sessionID := m.getAgentSessionID(ticket)
-		effectiveStatus = m.statusDetector.DetectStatus(ticket.AgentType, sessionID, isRunning)
-
-		if effectiveStatus == board.AgentNone && isRunning {
-			effectiveStatus = board.AgentWorking
-		} else if effectiveStatus == board.AgentNone {
-			effectiveStatus = board.AgentIdle
-		}
-	} else if ticket.AgentStatus != board.AgentNone {
-		effectiveStatus = ticket.AgentStatus
+	effectiveStatus := ticket.AgentStatus
+	if isRunning && effectiveStatus == board.AgentNone {
+		effectiveStatus = board.AgentWorking
 	}
 
 	idStr := lipgloss.NewStyle().

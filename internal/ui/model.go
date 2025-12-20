@@ -201,8 +201,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agentStatusMsg:
-		m.agentMgr.PollStatuses(m.board.Tickets)
-		return m, tickAgentStatus(m.agentMgr.StatusPollInterval())
+		return m, tea.Batch(
+			m.pollAgentStatusesAsync(),
+			tickAgentStatus(m.agentMgr.StatusPollInterval()),
+		)
+
+	case agentStatusResultMsg:
+		for ticketID, status := range msg {
+			if ticket := m.board.Tickets[ticketID]; ticket != nil {
+				ticket.AgentStatus = status
+			}
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -1336,6 +1345,56 @@ func (m *Model) saveBoard() {
 	}
 }
 
+func (m *Model) pollAgentStatusesAsync() tea.Cmd {
+	type paneInfo struct {
+		ticketID     board.TicketID
+		agentType    string
+		worktreePath string
+		branchName   string
+		running      bool
+	}
+
+	var panes []paneInfo
+	for ticketID, pane := range m.panes {
+		ticket := m.board.Tickets[ticketID]
+		if ticket == nil {
+			continue
+		}
+		panes = append(panes, paneInfo{
+			ticketID:     ticketID,
+			agentType:    ticket.AgentType,
+			worktreePath: ticket.WorktreePath,
+			branchName:   ticket.BranchName,
+			running:      pane.Running(),
+		})
+	}
+
+	detector := m.statusDetector
+
+	return func() tea.Msg {
+		results := make(agentStatusResultMsg)
+		for _, p := range panes {
+			if !p.running {
+				results[p.ticketID] = board.AgentNone
+				continue
+			}
+
+			sessionID := p.branchName
+			if sessionID == "" {
+				sessionID = string(p.ticketID)
+			}
+			if p.agentType == "opencode" && p.worktreePath != "" {
+				if id := agent.FindOpencodeSession(p.worktreePath); id != "" {
+					sessionID = id
+				}
+			}
+
+			results[p.ticketID] = detector.DetectStatus(p.agentType, sessionID, true)
+		}
+		return results
+	}
+}
+
 func (m *Model) handleTerminalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	for _, pane := range m.panes {
@@ -1347,6 +1406,7 @@ func (m *Model) handleTerminalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 type agentStatusMsg time.Time
+type agentStatusResultMsg map[board.TicketID]board.AgentStatus
 type notificationMsg time.Time
 
 func tickAgentStatus(d time.Duration) tea.Cmd {
