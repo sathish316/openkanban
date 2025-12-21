@@ -3,6 +3,10 @@
 A TUI kanban board for orchestrating AI coding agents.
 
 <p align="center">
+  <img width="1022" height="333" alt="image" src="https://github.com/user-attachments/assets/14cde506-2091-4745-9349-2604d8ec5b32" />
+</p>
+
+<p align="center">
   <img src="./docs/assets/demo.gif" alt="OpenKanban Demo" />
 </p>
 
