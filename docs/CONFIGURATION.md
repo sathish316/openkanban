@@ -39,6 +39,9 @@ OpenKanban configuration lives in `~/.config/openkanban/config.json`.
     "delete_worktree": true,
     "delete_branch": false,
     "force_worktree_removal": false
+  },
+  "behavior": {
+    "confirm_quit_with_agents": true
   }
 }
 ```
@@ -104,6 +107,20 @@ When deleting tickets:
 - `delete_worktree` - Remove the git worktree directory
 - `delete_branch` - Also delete the git branch
 - `force_worktree_removal` - Force removal even with uncommitted changes
+
+## Behavior
+
+Application behavior preferences:
+
+```json
+{
+  "behavior": {
+    "confirm_quit_with_agents": true
+  }
+}
+```
+
+- `confirm_quit_with_agents` - Prompt before quitting when agents are running (default: true). Set to false to auto-close agents without confirmation.
 
 ## Keybindings
 

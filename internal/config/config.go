@@ -86,6 +86,7 @@ type Config struct {
 	Agents   map[string]AgentConfig `json:"agents"`
 	UI       UIConfig               `json:"ui"`
 	Cleanup  CleanupSettings        `json:"cleanup"`
+	Behavior BehaviorSettings       `json:"behavior"`
 	Keys     map[string]string      `json:"keys,omitempty"`
 }
 
@@ -125,6 +126,11 @@ type CleanupSettings struct {
 	DeleteWorktree       bool `json:"delete_worktree"`        // Remove git worktree on ticket delete
 	DeleteBranch         bool `json:"delete_branch"`          // Delete git branch after worktree removal
 	ForceWorktreeRemoval bool `json:"force_worktree_removal"` // Force removal even with uncommitted changes
+}
+
+// BehaviorSettings controls application behavior preferences
+type BehaviorSettings struct {
+	ConfirmQuitWithAgents bool `json:"confirm_quit_with_agents"` // Prompt before quitting with running agents
 }
 
 // DefaultConfig returns the default configuration
@@ -175,6 +181,9 @@ func DefaultConfig() *Config {
 			DeleteWorktree:       true,
 			DeleteBranch:         false,
 			ForceWorktreeRemoval: false,
+		},
+		Behavior: BehaviorSettings{
+			ConfirmQuitWithAgents: true,
 		},
 	}
 }

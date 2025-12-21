@@ -652,6 +652,11 @@ func (m *Model) handleQuit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	if !m.config.Behavior.ConfirmQuitWithAgents {
+		m.mode = ModeShuttingDown
+		return m, tea.Batch(m.spinner.Tick, m.cleanupAsync())
+	}
+
 	m.showConfirm = true
 	m.confirmMsg = fmt.Sprintf("%d agent(s) running. Quit anyway? [y/N]", runningCount)
 	m.confirmFn = func() tea.Cmd {
