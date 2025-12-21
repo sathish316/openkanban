@@ -50,3 +50,15 @@ release:
     name: openkanban
   draft: false
   prerelease: auto
+
+brews:
+  - repository:
+      owner: TechDufus
+      name: homebrew-tap
+    homepage: https://github.com/TechDufus/openkanban
+    description: TUI kanban board for orchestrating AI coding agents
+    license: MIT
+    install: |
+      bin.install "openkanban"
+    test: |
+      system "#{bin}/openkanban", "version"

@@ -42,6 +42,20 @@ OpenKanban gives you a single view of all your work. Each ticket gets its own gi
 
 ## Install
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew install TechDufus/tap/openkanban
+```
+
+To update:
+
+```bash
+brew upgrade openkanban
+```
+
+### Go
+
 ```bash
 go install github.com/TechDufus/openkanban@latest
 ```
