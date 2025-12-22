@@ -10,7 +10,14 @@ import (
 
 func (m *Model) View() string {
 	if m.width == 0 || m.height == 0 {
-		return "Loading..."
+		loadingStyle := lipgloss.NewStyle().
+			Foreground(colorBlue).
+			Bold(true)
+		return lipgloss.Place(
+			80, 24,
+			lipgloss.Center, lipgloss.Center,
+			loadingStyle.Render("◈ Initializing..."),
+		)
 	}
 
 	if m.mode == ModeShuttingDown {
@@ -141,7 +148,16 @@ func (m *Model) renderHeader() string {
 	spacing := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	spacing = max(spacing, 0)
 
-	return lipgloss.JoinHorizontal(lipgloss.Center, left, strings.Repeat(" ", spacing), right)
+	header := lipgloss.JoinHorizontal(lipgloss.Center, left, strings.Repeat(" ", spacing), right)
+
+	return lipgloss.NewStyle().
+		PaddingTop(1).
+		PaddingBottom(1).
+		BorderBottom(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorSurface).
+		Width(m.width).
+		Render(header)
 }
 
 func (m *Model) renderBoard() string {
@@ -247,11 +263,22 @@ func (m *Model) renderColumn(col board.Column, tickets []*board.Ticket, isActive
 
 	ticketsView := strings.Join(ticketViews, "\n")
 	if len(tickets) == 0 {
+		emptyIcon := "○"
+		emptyText := "Drop tickets here"
+		if col.Status == board.StatusBacklog {
+			emptyIcon = "+"
+			emptyText = "Press 'n' to create"
+		} else if col.Status == board.StatusDone {
+			emptyIcon = "✓"
+			emptyText = "Completed work appears here"
+		}
 		emptyStyle := lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Italic(true).
-			Padding(1, 0)
-		ticketsView = emptyStyle.Render("No tickets")
+			Padding(2, 0).
+			Width(width - 4).
+			Align(lipgloss.Center)
+		ticketsView = emptyStyle.Render(emptyIcon + "\n" + emptyText)
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, headerLine, "", ticketsView)
@@ -460,11 +487,20 @@ func (m *Model) renderStatusBar() string {
 
 	notif := ""
 	if m.notification != "" {
+		isError := strings.HasPrefix(m.notification, "Failed") ||
+			strings.HasPrefix(m.notification, "Error") ||
+			strings.Contains(m.notification, "failed")
+		bgColor := colorGreen
+		icon := "✓"
+		if isError {
+			bgColor = colorRed
+			icon = "✗"
+		}
 		notifBadge := lipgloss.NewStyle().
 			Foreground(colorBase).
-			Background(colorGreen).
+			Background(bgColor).
 			Padding(0, 1).
-			Render("✓ " + m.notification)
+			Render(icon + " " + m.notification)
 		notif = notifBadge
 	}
 
