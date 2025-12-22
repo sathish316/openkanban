@@ -123,3 +123,29 @@ func ListProjects() error {
 
 	return nil
 }
+
+func DeleteProject(nameOrID string) error {
+	registry, err := project.LoadRegistry()
+	if err != nil {
+		return err
+	}
+
+	var target *project.Project
+	for _, p := range registry.List() {
+		if p.Name == nameOrID || p.ID == nameOrID || (len(p.ID) >= 8 && p.ID[:8] == nameOrID) {
+			target = p
+			break
+		}
+	}
+
+	if target == nil {
+		return fmt.Errorf("project not found: %s", nameOrID)
+	}
+
+	if err := registry.Delete(target.ID); err != nil {
+		return fmt.Errorf("failed to delete project: %w", err)
+	}
+
+	fmt.Printf("Deleted project '%s' (%s)\n", target.Name, target.RepoPath)
+	return nil
+}

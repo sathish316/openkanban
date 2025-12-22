@@ -29,13 +29,7 @@ for safe parallel development.`,
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		pp := projectPath
-		if pp == "" {
-			cwd, _ := os.Getwd()
-			pp = cwd
-		}
-
-		return app.Run(cfg, pp)
+		return app.Run(cfg, projectPath)
 	},
 }
 
@@ -49,6 +43,7 @@ func init() {
 
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(deleteCmd)
 }
 
 var newCmd = &cobra.Command{
@@ -85,5 +80,14 @@ var listCmd = &cobra.Command{
 	Short: "List all projects",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return app.ListProjects()
+	},
+}
+
+var deleteCmd = &cobra.Command{
+	Use:   "delete <name-or-id>",
+	Short: "Delete a project",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return app.DeleteProject(args[0])
 	},
 }

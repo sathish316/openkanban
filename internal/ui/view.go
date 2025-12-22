@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -65,26 +66,26 @@ func (m *Model) renderHeader() string {
 		Bold(true).
 		Render("◈ OpenKanban")
 
-	var filterBadge string
-	if m.filterProjectID == "" {
-		filterBadge = lipgloss.NewStyle().
-			Foreground(colorBase).
-			Background(colorMauve).
-			Padding(0, 1).
-			Render("All Projects")
-	} else if p := m.globalStore.GetProject(m.filterProjectID); p != nil {
-		filterBadge = lipgloss.NewStyle().
-			Foreground(colorBase).
-			Background(colorMauve).
-			Padding(0, 1).
-			Render(p.Name)
+	var filterSection string
+	if m.mode == ModeFilter {
+		filterSection = m.renderFilterInput()
+	} else if m.filterQuery != "" || m.filterProjectID != "" {
+		filterSection = m.renderActiveFilter()
+	} else {
+		filterSection = m.renderFilterHint()
 	}
 
 	projectCount := len(m.globalStore.Projects())
 	ticketCount := m.globalStore.Count()
-	stats := dimStyle.Render(fmt.Sprintf("%d projects, %d tickets", projectCount, ticketCount))
+	visibleCount := m.countVisibleTickets()
+	var stats string
+	if m.filterQuery != "" || m.filterProjectID != "" {
+		stats = dimStyle.Render(fmt.Sprintf("showing %d of %d", visibleCount, ticketCount))
+	} else {
+		stats = dimStyle.Render(fmt.Sprintf("%d projects, %d tickets", projectCount, ticketCount))
+	}
 
-	left := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", filterBadge, "  ", stats)
+	left := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", filterSection, "  ", stats)
 
 	workingCount, waitingCount, idleCount := 0, 0, 0
 	for ticketID, pane := range m.panes {
@@ -139,7 +140,7 @@ func (m *Model) renderHeader() string {
 	}
 
 	helpStyle := lipgloss.NewStyle().Foreground(colorMuted)
-	help := helpStyle.Render("p filter  ? help  q quit")
+	help := helpStyle.Render("? help  q quit")
 
 	right := help
 	if activity != "" {
@@ -335,21 +336,17 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int, c
 		effectiveStatus = board.AgentWorking
 	}
 
-	idStr := lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Render(fmt.Sprintf("#%s", string(ticket.ID)[:4]))
-
 	var projectBadge string
-	if m.filterProjectID == "" {
-		if proj := m.globalStore.GetProjectForTicket(ticket); proj != nil {
-			shortName := proj.Name
-			if len(shortName) > 12 {
-				shortName = shortName[:10] + ".."
-			}
-			projectBadge = lipgloss.NewStyle().
-				Foreground(colorTeal).
-				Render("[" + shortName + "]")
+	if proj := m.globalStore.GetProjectForTicket(ticket); proj != nil {
+		shortName := proj.Name
+		if len(shortName) > 15 {
+			shortName = shortName[:13] + ".."
 		}
+		projectBadge = lipgloss.NewStyle().
+			Foreground(colorBase).
+			Background(colorTeal).
+			Padding(0, 1).
+			Render(shortName)
 	}
 
 	var sessionBadge string
@@ -378,13 +375,14 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected bool, width int, c
 			Render("✗")
 	}
 
-	headerLine := idStr
+	var headerParts []string
 	if projectBadge != "" {
-		headerLine = fmt.Sprintf("%s %s", idStr, projectBadge)
+		headerParts = append(headerParts, projectBadge)
 	}
 	if sessionBadge != "" {
-		headerLine = fmt.Sprintf("%s  %s", headerLine, sessionBadge)
+		headerParts = append(headerParts, sessionBadge)
 	}
+	headerLine := strings.Join(headerParts, "  ")
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(colorText).
@@ -547,7 +545,7 @@ func (m *Model) renderStatusBar() string {
 		hintStyle.Render("n") + dimStyle.Render(": new") + sep +
 		hintStyle.Render("e") + dimStyle.Render(": edit") + sep +
 		hintStyle.Render("s") + dimStyle.Render(": spawn") + sep +
-		hintStyle.Render("p") + dimStyle.Render(": filter")
+		hintStyle.Render("/") + dimStyle.Render(": search")
 
 	notif := ""
 	if m.notification != "" {
@@ -608,7 +606,7 @@ func (m *Model) renderHelp() string {
 		sep + "\n" +
 		sectionStyle.Render("  🤖 Agent") + "                      " + sectionStyle.Render("👁 View") + "\n" +
 		sep + "\n" +
-		"  " + keyStyle.Render("s") + descStyle.Render("     Spawn agent           ") + keyStyle.Render("p") + descStyle.Render("       Cycle project filter") + "\n" +
+		"  " + keyStyle.Render("s") + descStyle.Render("     Spawn agent           ") + keyStyle.Render("/") + descStyle.Render("       Search/filter tickets") + "\n" +
 		"  " + keyStyle.Render("S") + descStyle.Render("     Stop agent            ") + keyStyle.Render("O") + descStyle.Render("       Settings") + "\n" +
 		"  " + keyStyle.Render("Enter") + descStyle.Render(" Attach to agent       ") + keyStyle.Render("?") + descStyle.Render("       Toggle help") + "\n" +
 		"  " + keyStyle.Render("Ctrl+g") + descStyle.Render(" Exit agent view      ") + keyStyle.Render("q") + descStyle.Render("       Quit") + "\n\n" +
@@ -736,15 +734,7 @@ func (m *Model) renderTicketForm() string {
 		branchField = m.branchInput.View()
 	}
 
-	var projectField string
-	if m.selectedProject != nil {
-		projectField = lipgloss.NewStyle().Foreground(colorTeal).Render(m.selectedProject.Name)
-		if m.ticketFormField == formFieldProject {
-			projectField += dimStyle.Render(" (Enter to cycle)")
-		}
-	} else {
-		projectField = dimStyle.Render("No project selected")
-	}
+	projectField := m.renderProjectSelector()
 
 	titleCharCount := fmt.Sprintf("%d/100", len(m.titleInput.Value()))
 	titleCharStyle := lipgloss.NewStyle().Foreground(colorMuted)
@@ -778,7 +768,7 @@ func (m *Model) renderTicketForm() string {
 		branchFocus + branchLabel.Render("Branch") + "\n" +
 		"  " + branchField + "\n"
 
-	if !isEdit && len(m.globalStore.Projects()) > 1 {
+	if !isEdit {
 		content += "\n" + projectFocus + projectLabel.Render("Project") + "\n" +
 			"  " + projectField + "\n"
 	}
@@ -853,7 +843,7 @@ func (m *Model) renderSettingsView() string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(colorTeal).Render("[Enter/Space]")+dimStyle.Render(" Cycle  ")+
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(colorTeal).Render("[Enter]")+dimStyle.Render(" Open search  ")+
 		lipgloss.NewStyle().Foreground(colorMuted).Render("[Esc]")+dimStyle.Render(" Close"))
 
 	content := strings.Join(lines, "\n")
@@ -967,6 +957,116 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+func (m *Model) renderFilterInput() string {
+	inputStyle := lipgloss.NewStyle().
+		Foreground(colorBase).
+		Background(colorTeal).
+		Padding(0, 1)
+	return inputStyle.Render("/ " + m.filterInput.View())
+}
+
+func (m *Model) renderActiveFilter() string {
+	filterStyle := lipgloss.NewStyle().
+		Foreground(colorBase).
+		Background(colorYellow).
+		Bold(true).
+		Padding(0, 1)
+
+	clearStyle := lipgloss.NewStyle().
+		Foreground(colorBase).
+		Background(colorRed).
+		Padding(0, 1)
+
+	filterText := m.filterQuery
+	if m.filterProjectID != "" && m.filterQuery == "" {
+		if p := m.globalStore.GetProject(m.filterProjectID); p != nil {
+			filterText = "@" + p.Name
+		}
+	}
+
+	return filterStyle.Render("FILTERED: "+filterText) + " " + clearStyle.Render("× clear")
+}
+
+func (m *Model) renderFilterHint() string {
+	return lipgloss.NewStyle().
+		Foreground(colorMuted).
+		Render("/ search (@project to filter)")
+}
+
+func (m *Model) countVisibleTickets() int {
+	count := 0
+	for _, tickets := range m.columnTickets {
+		count += len(tickets)
+	}
+	return count
+}
+
+func (m *Model) renderProjectSelector() string {
+	projects := m.globalStore.Projects()
+	if len(projects) == 0 {
+		return dimStyle.Render("No projects available")
+	}
+
+	if m.ticketFormField != formFieldProject {
+		if m.selectedProject != nil {
+			return lipgloss.NewStyle().Foreground(colorTeal).Render(m.selectedProject.Name)
+		}
+		return dimStyle.Render("Select project...")
+	}
+
+	if m.showAddProjectForm {
+		return m.renderAddProjectForm()
+	}
+
+	var lines []string
+	for i, p := range projects {
+		name := p.Name
+		path := shortenPath(p.RepoPath)
+
+		nameStyle := lipgloss.NewStyle().Foreground(colorText)
+		pathStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		prefix := "  "
+
+		if i == m.projectListIndex {
+			nameStyle = nameStyle.Foreground(colorTeal).Bold(true)
+			pathStyle = pathStyle.Foreground(colorSubtext)
+			prefix = lipgloss.NewStyle().Foreground(colorTeal).Render("● ")
+		} else {
+			prefix = "○ "
+		}
+
+		line := prefix + nameStyle.Render(name) + "  " + pathStyle.Render(path)
+		lines = append(lines, line)
+	}
+
+	addOption := "○ " + lipgloss.NewStyle().Foreground(colorGreen).Render("+ Add project...")
+	if m.projectListIndex == len(projects) {
+		addOption = lipgloss.NewStyle().Foreground(colorTeal).Render("● ") +
+			lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("+ Add project...")
+	}
+	lines = append(lines, addOption)
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("j/k navigate  Enter select  d delete"))
+
+	return strings.Join(lines, "\n  ")
+}
+
+func (m *Model) renderAddProjectForm() string {
+	titleStyle := lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
+	return titleStyle.Render("Add Project") + "\n\n" +
+		"  " + lipgloss.NewStyle().Foreground(colorSubtext).Render("Repository path:") + "\n" +
+		"  " + m.addProjectPath.View() + "\n\n" +
+		"  " + dimStyle.Render("[Enter] Add  [Esc] Cancel")
+}
+
+func shortenPath(path string) string {
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
 }
 
 var (

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ const (
 	ModeSettings     Mode = "SETTINGS"
 	ModeShuttingDown Mode = "SHUTTING_DOWN"
 	ModeSpawning     Mode = "SPAWNING"
+	ModeFilter       Mode = "FILTER"
 )
 
 const (
@@ -79,14 +81,17 @@ type Model struct {
 	confirmMsg  string
 	confirmFn   func() tea.Cmd
 
-	titleInput      textinput.Model
-	descInput       textarea.Model
-	branchInput     textinput.Model
-	projectInput    textinput.Model
-	ticketFormField int
-	editingTicketID board.TicketID
-	branchLocked    bool
-	selectedProject *project.Project
+	titleInput         textinput.Model
+	descInput          textarea.Model
+	branchInput        textinput.Model
+	projectInput       textinput.Model
+	ticketFormField    int
+	editingTicketID    board.TicketID
+	branchLocked       bool
+	selectedProject    *project.Project
+	projectListIndex   int
+	showAddProjectForm bool
+	addProjectPath     textinput.Model
 
 	notification string
 	notifyTime   time.Time
@@ -101,6 +106,9 @@ type Model struct {
 	settingsIndex   int
 	settingsEditing bool
 	settingsInput   textinput.Model
+
+	filterInput textinput.Model
+	filterQuery string
 }
 
 func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, agentMgr *agent.Manager, filterProjectID string) *Model {
@@ -129,6 +137,16 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, agentM
 	si := textinput.New()
 	si.CharLimit = 200
 	si.Width = 40
+
+	fi := textinput.New()
+	fi.Placeholder = "Search tickets..."
+	fi.CharLimit = 100
+	fi.Width = 30
+
+	ap := textinput.New()
+	ap.Placeholder = "/path/to/repository"
+	ap.CharLimit = 256
+	ap.Width = 40
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Meter
@@ -163,6 +181,8 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, agentM
 		branchInput:     bi,
 		projectInput:    pi,
 		settingsInput:   si,
+		filterInput:     fi,
+		addProjectPath:  ap,
 		spinner:         sp,
 		panes:           make(map[board.TicketID]*terminal.Pane),
 		statusDetector:  agent.NewStatusDetector(),
@@ -283,6 +303,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == ModeAgentView {
 			return m.handleAgentViewMouse(msg)
 		}
+		if m.mode == ModeCreateTicket || m.mode == ModeEditTicket {
+			return m.handleTicketFormMouse(msg)
+		}
+		if m.mode == ModeFilter {
+			return m.handleFilterMouse(msg)
+		}
+		if m.mode == ModeSettings {
+			return m.handleSettingsMouse(msg)
+		}
+		if m.showHelp {
+			if msg.Action == tea.MouseActionPress {
+				m.showHelp = false
+			}
+			return m, nil
+		}
+		if m.showConfirm {
+			return m.handleConfirmMouse(msg)
+		}
 		return m, nil
 
 	case terminal.OutputMsg, terminal.RenderTickMsg:
@@ -374,6 +412,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAgentViewMode(msg)
 	case ModeSettings:
 		return m.handleSettingsMode(msg)
+	case ModeFilter:
+		return m.handleFilterMode(msg)
 	}
 
 	return m, nil
@@ -418,8 +458,10 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.mode = ModeCommand
 
-	case "p":
-		m.cycleProjectFilter()
+	case "/":
+		m.filterInput.SetValue(m.filterQuery)
+		m.filterInput.Focus()
+		m.mode = ModeFilter
 
 	case "O":
 		m.mode = ModeSettings
@@ -430,47 +472,13 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) cycleProjectFilter() {
-	projects := m.globalStore.Projects()
-	if len(projects) == 0 {
-		return
-	}
-
-	if m.filterProjectID == "" {
-		m.filterProjectID = projects[0].ID
-	} else {
-		found := false
-		for i, p := range projects {
-			if p.ID == m.filterProjectID {
-				if i+1 < len(projects) {
-					m.filterProjectID = projects[i+1].ID
-				} else {
-					m.filterProjectID = ""
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			m.filterProjectID = ""
-		}
-	}
-
-	m.refreshColumnTickets()
-
-	if m.filterProjectID == "" {
-		m.notify("Showing all projects")
-	} else {
-		if p := m.globalStore.GetProject(m.filterProjectID); p != nil {
-			m.notify("Filtering: " + p.Name)
-		}
-	}
-}
-
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Action {
 	case tea.MouseActionPress:
 		if msg.Button == tea.MouseButtonLeft {
+			if m.hitTestHeader(msg.X, msg.Y) {
+				return m, nil
+			}
 			col, ticket := m.hitTest(msg.X, msg.Y)
 			if col >= 0 {
 				m.activeColumn = col
@@ -512,6 +520,29 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *Model) hitTestHeader(x, y int) bool {
+	if y > 2 {
+		return false
+	}
+
+	if m.filterQuery != "" || m.filterProjectID != "" {
+		clearStart := 20 + len(m.filterQuery) + 15
+		if x >= clearStart && x <= clearStart+10 {
+			m.clearFilter()
+			return true
+		}
+	}
+
+	if x >= 15 && x <= 30 {
+		m.filterInput.SetValue(m.filterQuery)
+		m.filterInput.Focus()
+		m.mode = ModeFilter
+		return true
+	}
+
+	return false
 }
 
 func (m *Model) hitTest(x, y int) (column, ticket int) {
@@ -702,6 +733,72 @@ func (m *Model) handleAgentViewMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) handleTicketFormMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+		return m, nil
+	}
+
+	formWidth := 50
+	formLeft := (m.width - formWidth) / 2
+	formRight := formLeft + formWidth
+
+	if msg.X < formLeft || msg.X > formRight {
+		return m, nil
+	}
+
+	formTop := (m.height - 20) / 2
+	relY := msg.Y - formTop
+
+	var clickedField int = -1
+	switch {
+	case relY >= 3 && relY <= 4:
+		clickedField = formFieldTitle
+	case relY >= 6 && relY <= 9:
+		clickedField = formFieldDescription
+	case relY >= 11 && relY <= 12:
+		clickedField = formFieldBranch
+	case relY >= 14:
+		clickedField = formFieldProject
+	}
+
+	if clickedField >= 0 && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.blurAllFormFields()
+		m.ticketFormField = clickedField
+		m.focusCurrentField()
+
+		if clickedField == formFieldProject && !m.showAddProjectForm {
+			projects := m.globalStore.Projects()
+			projectRelY := relY - 15
+			if projectRelY >= 0 && projectRelY <= len(projects) {
+				m.projectListIndex = projectRelY
+				if projectRelY == len(projects) {
+					m.showAddProjectForm = true
+					m.addProjectPath.SetValue("")
+					m.addProjectPath.Focus()
+					return m, textinput.Blink
+				}
+				if projectRelY < len(projects) {
+					m.selectedProject = projects[projectRelY]
+				}
+			}
+		}
+	}
+
+	var cmd tea.Cmd
+	switch m.ticketFormField {
+	case formFieldTitle:
+		m.titleInput, cmd = m.titleInput.Update(msg)
+	case formFieldDescription:
+		m.descInput, cmd = m.descInput.Update(msg)
+	case formFieldBranch:
+		if !m.branchLocked {
+			m.branchInput, cmd = m.branchInput.Update(msg)
+		}
+	}
+
+	return m, cmd
+}
+
 func (m *Model) handleCreateTicketMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.handleTicketForm(msg, false)
 }
@@ -725,11 +822,15 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 			return m.saveTicketForm(isEdit)
 		}
 		if m.ticketFormField == formFieldProject && !isEdit {
-			m.cycleSelectedProject()
-			return m, nil
+			return m.handleProjectSelection()
 		}
 
 	case "esc":
+		if m.showAddProjectForm {
+			m.showAddProjectForm = false
+			m.addProjectPath.Blur()
+			return m, nil
+		}
 		m.mode = ModeNormal
 		m.blurAllFormFields()
 		m.editingTicketID = ""
@@ -748,35 +849,120 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 			m.branchInput, cmd = m.branchInput.Update(msg)
 		}
 	case formFieldProject:
-		if msg.String() == " " || msg.String() == "enter" {
-			m.cycleSelectedProject()
+		if m.showAddProjectForm {
+			m.addProjectPath, cmd = m.addProjectPath.Update(msg)
+		} else {
+			cmd = m.handleProjectListNav(msg)
 		}
 	}
 	return m, cmd
 }
 
-func (m *Model) cycleSelectedProject() {
+func (m *Model) handleProjectListNav(msg tea.KeyMsg) tea.Cmd {
 	projects := m.globalStore.Projects()
-	if len(projects) == 0 {
-		return
-	}
+	maxIndex := len(projects)
 
-	if m.selectedProject == nil {
-		m.selectedProject = projects[0]
-		return
-	}
-
-	for i, p := range projects {
-		if p.ID == m.selectedProject.ID {
-			if i+1 < len(projects) {
-				m.selectedProject = projects[i+1]
-			} else {
-				m.selectedProject = projects[0]
-			}
-			return
+	switch msg.String() {
+	case "j", "down":
+		m.projectListIndex++
+		if m.projectListIndex > maxIndex {
+			m.projectListIndex = 0
+		}
+	case "k", "up":
+		m.projectListIndex--
+		if m.projectListIndex < 0 {
+			m.projectListIndex = maxIndex
+		}
+	case "d":
+		if m.projectListIndex < len(projects) {
+			m.confirmDeleteProject(projects[m.projectListIndex])
 		}
 	}
-	m.selectedProject = projects[0]
+	return nil
+}
+
+func (m *Model) confirmDeleteProject(p *project.Project) {
+	m.confirmMsg = fmt.Sprintf("Delete project '%s'?", p.Name)
+	m.showConfirm = true
+	m.confirmFn = func() tea.Cmd {
+		m.globalStore.RemoveProject(p.ID)
+		delete(m.worktreeMgrs, p.ID)
+
+		projects := m.globalStore.Projects()
+		if len(projects) > 0 {
+			if m.projectListIndex >= len(projects) {
+				m.projectListIndex = len(projects) - 1
+			}
+			m.selectedProject = projects[m.projectListIndex]
+		} else {
+			m.selectedProject = nil
+		}
+
+		if m.filterProjectID == p.ID {
+			m.filterProjectID = ""
+		}
+
+		m.notify("Deleted: " + p.Name)
+		return nil
+	}
+}
+
+func (m *Model) handleProjectSelection() (tea.Model, tea.Cmd) {
+	projects := m.globalStore.Projects()
+
+	if m.showAddProjectForm {
+		return m.createProjectFromPath()
+	}
+
+	if m.projectListIndex < len(projects) {
+		m.selectedProject = projects[m.projectListIndex]
+		return m, nil
+	}
+
+	m.showAddProjectForm = true
+	m.addProjectPath.SetValue("")
+	m.addProjectPath.Focus()
+	return m, textinput.Blink
+}
+
+func (m *Model) createProjectFromPath() (tea.Model, tea.Cmd) {
+	path := strings.TrimSpace(m.addProjectPath.Value())
+	if path == "" {
+		m.notify("Path cannot be empty")
+		return m, nil
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		m.notify("Invalid path: " + err.Error())
+		return m, nil
+	}
+
+	gitDir := filepath.Join(absPath, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		m.notify("Not a git repository")
+		return m, nil
+	}
+
+	name := filepath.Base(absPath)
+
+	newProject := project.NewProject(name, absPath)
+	if m.config.Defaults.DefaultAgent != "" {
+		newProject.Settings.DefaultAgent = m.config.Defaults.DefaultAgent
+	}
+	if m.config.Defaults.BranchPrefix != "" {
+		newProject.Settings.BranchPrefix = m.config.Defaults.BranchPrefix
+	}
+
+	m.globalStore.AddProject(newProject)
+
+	m.worktreeMgrs[newProject.ID] = git.NewWorktreeManager(newProject)
+	m.selectedProject = newProject
+	m.showAddProjectForm = false
+	m.addProjectPath.Blur()
+	m.projectListIndex = len(m.globalStore.Projects()) - 1
+	m.notify("Added project: " + name)
+	return m, nil
 }
 
 func (m *Model) nextFormField(isEdit bool) *Model {
@@ -784,7 +970,7 @@ func (m *Model) nextFormField(isEdit bool) *Model {
 	m.ticketFormField++
 
 	maxField := formFieldBranch
-	if !isEdit && len(m.globalStore.Projects()) > 1 {
+	if !isEdit {
 		maxField = formFieldProject
 	}
 
@@ -806,7 +992,7 @@ func (m *Model) prevFormField(isEdit bool) *Model {
 	m.ticketFormField--
 
 	maxField := formFieldBranch
-	if !isEdit && len(m.globalStore.Projects()) > 1 {
+	if !isEdit {
 		maxField = formFieldProject
 	}
 
@@ -929,9 +1115,10 @@ func (m *Model) handleSettingsEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	field := settingsFields[m.settingsIndex]
 
 	if field.kind == "project" {
-		m.cycleProjectFilter()
-		m.settingsEditing = false
-		return m, nil
+		m.filterInput.SetValue(m.filterQuery)
+		m.filterInput.Focus()
+		m.mode = ModeFilter
+		return m, textinput.Blink
 	}
 
 	switch msg.String() {
@@ -952,12 +1139,56 @@ func (m *Model) handleSettingsEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *Model) handleSettingsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+
+	formTop := (m.height - 10) / 2
+	relY := msg.Y - formTop - 3
+
+	if relY >= 0 && relY < len(settingsFields) {
+		m.settingsIndex = relY
+		return m.enterSettingsEdit()
+	}
+
+	return m, nil
+}
+
+func (m *Model) handleConfirmMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+
+	formCenterY := m.height / 2
+	formCenterX := m.width / 2
+
+	yesX := formCenterX - 10
+	noX := formCenterX + 5
+
+	if msg.Y == formCenterY+2 {
+		if msg.X >= yesX && msg.X <= yesX+5 {
+			m.showConfirm = false
+			if m.confirmFn != nil {
+				return m, m.confirmFn()
+			}
+		}
+		if msg.X >= noX && msg.X <= noX+4 {
+			m.showConfirm = false
+		}
+	}
+
+	return m, nil
+}
+
 func (m *Model) enterSettingsEdit() (tea.Model, tea.Cmd) {
 	field := settingsFields[m.settingsIndex]
 
 	if field.kind == "project" {
-		m.cycleProjectFilter()
-		return m, nil
+		m.filterInput.SetValue(m.filterQuery)
+		m.filterInput.Focus()
+		m.mode = ModeFilter
+		return m, textinput.Blink
 	}
 
 	m.settingsEditing = true
@@ -980,6 +1211,40 @@ func (m *Model) getSettingsValue(key string) string {
 }
 
 func (m *Model) applySettingsValue(key, value string) {
+}
+
+func (m *Model) handleFilterMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.filterInput.Blur()
+		m.mode = ModeNormal
+		return m, nil
+	case "esc":
+		m.filterQuery = ""
+		m.filterInput.SetValue("")
+		m.filterInput.Blur()
+		m.mode = ModeNormal
+		m.refreshColumnTickets()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	m.filterQuery = m.filterInput.Value()
+	m.refreshColumnTickets()
+	return m, cmd
+}
+
+func (m *Model) handleFilterMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) clearFilter() {
+	m.filterQuery = ""
+	m.filterProjectID = ""
+	m.refreshColumnTickets()
 }
 
 func (m *Model) moveColumn(delta int) {
@@ -1099,6 +1364,7 @@ func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
 	m.ticketFormField = formFieldTitle
 	m.editingTicketID = ""
 	m.branchLocked = false
+	m.showAddProjectForm = false
 
 	if m.filterProjectID != "" {
 		m.selectedProject = m.globalStore.GetProject(m.filterProjectID)
@@ -1106,6 +1372,16 @@ func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
 		projects := m.globalStore.Projects()
 		if len(projects) > 0 {
 			m.selectedProject = projects[0]
+		}
+	}
+
+	m.projectListIndex = 0
+	if m.selectedProject != nil {
+		for i, p := range m.globalStore.Projects() {
+			if p.ID == m.selectedProject.ID {
+				m.projectListIndex = i
+				break
+			}
 		}
 	}
 
@@ -1456,57 +1732,6 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 	}
 }
 
-func (m *Model) buildAgentArgs(cfg config.AgentConfig, ticket *board.Ticket, isNewSession bool) []string {
-	args := make([]string, len(cfg.Args))
-	copy(args, cfg.Args)
-
-	agentType := cfg.Command
-	if strings.Contains(agentType, "/") {
-		agentType = filepath.Base(agentType)
-	}
-
-	promptTemplate := m.config.GetEffectiveInitPrompt(agentType)
-
-	switch agentType {
-	case "claude":
-		if isNewSession && promptTemplate != "" {
-			prompt := agent.BuildContextPrompt(promptTemplate, ticket)
-			if prompt != "" {
-				args = append(args, "--append-system-prompt", prompt)
-			}
-		} else if !isNewSession {
-			if !containsFlag(args, "--continue", "-c") {
-				args = append(args, "--continue")
-			}
-		}
-	case "opencode":
-		args = append([]string{ticket.WorktreePath}, args...)
-		if isNewSession && promptTemplate != "" {
-			prompt := agent.BuildContextPrompt(promptTemplate, ticket)
-			if prompt != "" {
-				args = append(args, "-p", prompt)
-			}
-		} else if !isNewSession {
-			if sessionID := agent.FindOpencodeSession(ticket.WorktreePath); sessionID != "" {
-				args = append(args, "--session", sessionID)
-			}
-		}
-	}
-
-	return args
-}
-
-func containsFlag(args []string, flags ...string) bool {
-	for _, arg := range args {
-		for _, flag := range flags {
-			if arg == flag {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (m *Model) stopAgent() (tea.Model, tea.Cmd) {
 	ticket := m.selectedTicket()
 	if ticket == nil {
@@ -1552,22 +1777,47 @@ func (m *Model) refreshColumnTickets() {
 	m.columnTickets = make([][]*board.Ticket, len(m.columns))
 	for i, col := range m.columns {
 		allForStatus := m.globalStore.GetByStatus(col.Status)
-		if m.filterProjectID != "" {
-			var filtered []*board.Ticket
-			for _, t := range allForStatus {
-				if t.ProjectID == m.filterProjectID {
-					filtered = append(filtered, t)
-				}
+		var filtered []*board.Ticket
+		for _, t := range allForStatus {
+			if !m.ticketMatchesFilter(t) {
+				continue
 			}
-			m.columnTickets[i] = filtered
-		} else {
-			m.columnTickets[i] = allForStatus
+			filtered = append(filtered, t)
 		}
+		m.columnTickets[i] = filtered
 	}
 
 	if len(m.columnOffsets) != len(m.columns) {
 		m.columnOffsets = make([]int, len(m.columns))
 	}
+}
+
+func (m *Model) ticketMatchesFilter(t *board.Ticket) bool {
+	if m.filterProjectID != "" && t.ProjectID != m.filterProjectID {
+		return false
+	}
+	if m.filterQuery == "" {
+		return true
+	}
+
+	query := strings.ToLower(m.filterQuery)
+
+	if strings.HasPrefix(query, "@") {
+		parts := strings.SplitN(query, " ", 2)
+		projectName := strings.TrimPrefix(parts[0], "@")
+		proj := m.globalStore.GetProjectForTicket(t)
+		if proj == nil || !strings.Contains(strings.ToLower(proj.Name), projectName) {
+			return false
+		}
+		if len(parts) == 1 {
+			return true
+		}
+		query = strings.TrimSpace(parts[1])
+	}
+
+	title := strings.ToLower(t.Title)
+	desc := strings.ToLower(t.Description)
+	return strings.Contains(title, query) || strings.Contains(desc, query)
 }
 
 func (m *Model) nextStatus(current board.TicketStatus) board.TicketStatus {

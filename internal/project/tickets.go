@@ -142,13 +142,15 @@ func (s *TicketStore) CountByStatus(status board.TicketStatus) int {
 
 // GlobalTicketStore aggregates tickets from all projects
 type GlobalTicketStore struct {
+	registry     *ProjectRegistry
 	projects     map[string]*Project
 	ticketStores map[string]*TicketStore
 	allTickets   map[board.TicketID]*board.Ticket
 }
 
-func NewGlobalTicketStore() *GlobalTicketStore {
+func NewGlobalTicketStore(registry *ProjectRegistry) *GlobalTicketStore {
 	return &GlobalTicketStore{
+		registry:     registry,
 		projects:     make(map[string]*Project),
 		ticketStores: make(map[string]*TicketStore),
 		allTickets:   make(map[board.TicketID]*board.Ticket),
@@ -156,7 +158,7 @@ func NewGlobalTicketStore() *GlobalTicketStore {
 }
 
 func LoadGlobalTicketStore(registry *ProjectRegistry) (*GlobalTicketStore, error) {
-	g := NewGlobalTicketStore()
+	g := NewGlobalTicketStore(registry)
 
 	for _, p := range registry.Projects {
 		store, err := LoadTicketStore(p)
@@ -286,4 +288,15 @@ func (g *GlobalTicketStore) HasProjects() bool {
 func (g *GlobalTicketStore) AddProject(p *Project) {
 	g.projects[p.ID] = p
 	g.ticketStores[p.ID] = NewTicketStore(p.ID, p.RepoPath)
+}
+
+func (g *GlobalTicketStore) RemoveProject(id string) error {
+	if _, ok := g.projects[id]; !ok {
+		return ErrProjectNotFound
+	}
+
+	delete(g.projects, id)
+	delete(g.ticketStores, id)
+
+	return g.registry.Delete(id)
 }
