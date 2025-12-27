@@ -56,10 +56,14 @@ func NewStatusDetector() *StatusDetector {
 }
 
 func (d *StatusDetector) DetectStatus(agentType, sessionID string, processRunning bool, terminalContent string) board.AgentStatus {
-	return d.DetectStatusWithPath(agentType, sessionID, "", processRunning, terminalContent)
+	return d.DetectStatusWithPort(agentType, sessionID, "", 0, processRunning, terminalContent)
 }
 
 func (d *StatusDetector) DetectStatusWithPath(agentType, sessionID, worktreePath string, processRunning bool, terminalContent string) board.AgentStatus {
+	return d.DetectStatusWithPort(agentType, sessionID, worktreePath, 0, processRunning, terminalContent)
+}
+
+func (d *StatusDetector) DetectStatusWithPort(agentType, sessionID, worktreePath string, port int, processRunning bool, terminalContent string) board.AgentStatus {
 	if !processRunning {
 		return board.AgentNone
 	}
@@ -69,10 +73,13 @@ func (d *StatusDetector) DetectStatusWithPath(agentType, sessionID, worktreePath
 	}
 
 	if agentType == "opencode" {
-		if status := d.queryOpencodeStatusByDirectory(worktreePath); status != board.AgentNone {
+		if port > 0 {
+			if status := d.queryOpencodeAPIOnPort(port); status != board.AgentNone {
+				return status
+			}
+		} else if status := d.queryOpencodeStatusByDirectory(worktreePath); status != board.AgentNone {
 			return status
-		}
-		if sessionID != "" {
+		} else if sessionID != "" {
 			if status := d.queryOpencodeAPI(sessionID); status != board.AgentNone {
 				return status
 			}
@@ -225,6 +232,60 @@ func (d *StatusDetector) queryOpencodeAPI(sessionID string) board.AgentStatus {
 		timestamp: time.Now(),
 	}
 	d.statusCacheMu.Unlock()
+
+	return status
+}
+
+func (d *StatusDetector) queryOpencodeAPIOnPort(port int) board.AgentStatus {
+	cacheKey := fmt.Sprintf("opencode-port:%d", port)
+
+	d.statusCacheMu.RLock()
+	cached, exists := d.statusCache[cacheKey]
+	d.statusCacheMu.RUnlock()
+
+	if exists && time.Since(cached.timestamp) < d.cacheExpiration {
+		return cached.status
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/session/status", port)
+	resp, err := d.httpClient.Get(url)
+	if err != nil {
+		return board.AgentNone
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return board.AgentNone
+	}
+
+	var statusResp opencodeStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		return board.AgentNone
+	}
+
+	var status board.AgentStatus = board.AgentNone
+	for _, sessionStatus := range statusResp {
+		mappedStatus := d.mapOpencodeStatus(sessionStatus)
+		if mappedStatus == board.AgentWorking {
+			status = board.AgentWorking
+			break
+		}
+		if mappedStatus == board.AgentError && status != board.AgentWorking {
+			status = board.AgentError
+		}
+		if mappedStatus == board.AgentIdle && status == board.AgentNone {
+			status = board.AgentIdle
+		}
+	}
+
+	if status != board.AgentNone {
+		d.statusCacheMu.Lock()
+		d.statusCache[cacheKey] = cachedStatus{
+			status:    status,
+			timestamp: time.Now(),
+		}
+		d.statusCacheMu.Unlock()
+	}
 
 	return status
 }

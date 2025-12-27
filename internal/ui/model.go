@@ -20,6 +20,8 @@ import (
 	"github.com/techdufus/openkanban/internal/terminal"
 )
 
+const agentPortBase = 4097
+
 type Mode string
 
 const (
@@ -1758,6 +1760,21 @@ func (m *Model) generateBranchName(ticket *board.Ticket, proj *project.Project) 
 	return m.generateBranchNameFromTitle(ticket.Title, proj)
 }
 
+func (m *Model) allocateAgentPort() int {
+	usedPorts := make(map[int]bool)
+	for _, t := range m.globalStore.All() {
+		if t.AgentPort > 0 {
+			usedPorts[t.AgentPort] = true
+		}
+	}
+
+	port := agentPortBase
+	for usedPorts[port] {
+		port++
+	}
+	return port
+}
+
 func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 	ticket := m.selectedTicket()
 	if ticket == nil {
@@ -1807,6 +1824,13 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 	agentType := agentCfg.Command
 	if strings.Contains(agentType, "/") {
 		agentType = filepath.Base(agentType)
+	}
+
+	agentPort := ticket.AgentPort
+	if agentPort == 0 && agentType == "opencode" {
+		agentPort = m.allocateAgentPort()
+		ticket.AgentPort = agentPort
+		m.saveTicket(ticket)
 	}
 
 	mgr := m.worktreeMgrs[proj.ID]
@@ -1873,31 +1897,20 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 			}
 		case "opencode":
 			command := agentCfg.Command
-			if opencodeServer != nil && opencodeServer.IsRunning() {
+			sessionID := agent.FindOpencodeSession(worktreePath)
+
+			if !isNewSession && sessionID != "" && opencodeServer != nil && opencodeServer.IsRunning() {
 				command = "opencode"
-				args = []string{"attach", opencodeServer.URL(), "--dir", worktreePath}
-				if !isNewSession {
-					if sessionID := agent.FindOpencodeSession(worktreePath); sessionID != "" {
-						args = append(args, "--session", sessionID)
-					}
-				}
-				if isNewSession && promptTemplate != "" {
-					prompt := agent.BuildContextPrompt(promptTemplate, ticket)
-					if prompt != "" {
-						args = append(args, "-p", prompt)
-					}
-				}
+				args = []string{"attach", opencodeServer.URL(), "--session", sessionID}
 			} else {
-				args = append([]string{worktreePath}, args...)
+				args = []string{worktreePath, "--port", fmt.Sprintf("%d", agentPort)}
 				if isNewSession && promptTemplate != "" {
 					prompt := agent.BuildContextPrompt(promptTemplate, ticket)
 					if prompt != "" {
 						args = append(args, "-p", prompt)
 					}
-				} else if !isNewSession {
-					if sessionID := agent.FindOpencodeSession(worktreePath); sessionID != "" {
-						args = append(args, "--session", sessionID)
-					}
+				} else if sessionID != "" {
+					args = append(args, "--session", sessionID)
 				}
 			}
 			return spawnReadyMsg{
@@ -2082,6 +2095,7 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 		agentType       string
 		worktreePath    string
 		branchName      string
+		agentPort       int
 		running         bool
 		terminalContent string
 	}
@@ -2101,6 +2115,7 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 			agentType:       ticket.AgentType,
 			worktreePath:    worktreePath,
 			branchName:      ticket.BranchName,
+			agentPort:       ticket.AgentPort,
 			running:         pane.Running(),
 			terminalContent: pane.GetContent(),
 		})
@@ -2126,7 +2141,7 @@ func (m *Model) pollAgentStatusesAsync() tea.Cmd {
 				}
 			}
 
-			results[p.ticketID] = detector.DetectStatusWithPath(p.agentType, sessionID, p.worktreePath, true, p.terminalContent)
+			results[p.ticketID] = detector.DetectStatusWithPort(p.agentType, sessionID, p.worktreePath, p.agentPort, true, p.terminalContent)
 		}
 		return results
 	}

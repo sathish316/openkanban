@@ -37,17 +37,38 @@ func (m *WorktreeManager) CreateWorktree(branchName, baseBranch string) (string,
 	worktreePath := filepath.Join(m.baseDir, sanitizeBranchName(branchName))
 
 	if _, err := os.Stat(worktreePath); err == nil {
-		return worktreePath, nil
+		if m.isValidWorktree(worktreePath) {
+			return worktreePath, nil
+		}
+		os.RemoveAll(worktreePath)
 	}
 
 	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, baseBranch)
 	cmd.Dir = m.repoPath
 
 	if output, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(output), "already exists") {
+			cmd = exec.Command("git", "worktree", "add", worktreePath, branchName)
+			cmd.Dir = m.repoPath
+			if output2, err2 := cmd.CombinedOutput(); err2 != nil {
+				return "", fmt.Errorf("failed to create worktree: %s: %w", string(output2), err2)
+			}
+			return worktreePath, nil
+		}
 		return "", fmt.Errorf("failed to create worktree: %s: %w", string(output), err)
 	}
 
 	return worktreePath, nil
+}
+
+func (m *WorktreeManager) isValidWorktree(path string) bool {
+	gitPath := filepath.Join(path, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	// Worktrees have a .git file (not directory) pointing to the main repo
+	return !info.IsDir()
 }
 
 func (m *WorktreeManager) RemoveWorktree(worktreePath string) error {
