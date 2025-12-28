@@ -57,7 +57,7 @@ brew upgrade openkanban
 ### Go
 
 ```bash
-go install github.com/TechDufus/openkanban@latest
+go install github.com/techdufus/openkanban@latest
 ```
 
 ## Quick Start
