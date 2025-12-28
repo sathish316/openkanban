@@ -36,6 +36,22 @@ checksum:
 
 changelog:
   sort: asc
+  use: github
+  groups:
+    - title: "✨ Features"
+      regexp: '^.*?feat(\(.+\))?\!?:'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^.*?fix(\(.+\))?\!?:'
+      order: 1
+    - title: "🔧 Refactoring"
+      regexp: '^.*?refactor(\(.+\))?\!?:'
+      order: 2
+    - title: "📦 Build"
+      regexp: '^.*?(build|ci)(\(.+\))?\!?:'
+      order: 3
+    - title: "Other"
+      order: 999
   filters:
     exclude:
       - '^docs:'
@@ -50,6 +66,20 @@ release:
     name: openkanban
   draft: false
   prerelease: auto
+  header: |
+    ## Install
+
+    ```bash
+    # Homebrew
+    brew install TechDufus/tap/openkanban
+
+    # Go
+    go install github.com/techdufus/openkanban@{{ .Tag }}
+    ```
+
+  footer: |
+    ---
+    **Full Changelog**: https://github.com/TechDufus/openkanban/compare/{{ .PreviousTag }}...{{ .Tag }}
 
 brews:
   - repository:
