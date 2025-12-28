@@ -397,6 +397,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == ModeAgentView {
 			break
 		}
+		if m.mode == ModeNormal && (m.filterQuery != "" || m.filterProjectID != "") {
+			m.clearFilter()
+			m.notify("Filter cleared")
+			return m, nil
+		}
 		m.mode = ModeNormal
 		m.showHelp = false
 		m.showConfirm = false
