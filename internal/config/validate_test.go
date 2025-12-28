@@ -142,10 +142,10 @@ func TestValidate_CommandNotInPath(t *testing.T) {
 		Command: "nonexistent-binary-12345",
 		Args:    []string{},
 	}
+	cfg.Defaults.DefaultAgent = "custom"
 
 	result := cfg.Validate()
 
-	// This should be a warning, not an error
 	hasCommandWarning := false
 	for _, w := range result.Warnings {
 		if w.Section == "agents.custom" && w.Field == "command" {
@@ -156,7 +156,24 @@ func TestValidate_CommandNotInPath(t *testing.T) {
 		}
 	}
 	if !hasCommandWarning {
-		t.Error("expected warning for command not in PATH")
+		t.Error("expected warning for default agent command not in PATH")
+	}
+}
+
+func TestValidate_NonDefaultAgentNotInPath_NoWarning(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agents["custom"] = AgentConfig{
+		Command: "nonexistent-binary-12345",
+		Args:    []string{},
+	}
+	cfg.Defaults.DefaultAgent = "opencode"
+
+	result := cfg.Validate()
+
+	for _, w := range result.Warnings {
+		if w.Section == "agents.custom" && w.Field == "command" {
+			t.Error("should not warn about non-default agent missing from PATH")
+		}
 	}
 }
 

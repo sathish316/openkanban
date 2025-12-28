@@ -143,16 +143,13 @@ func (c *Config) validateDefaults(r *ValidationResult) {
 	}
 }
 
-// validateAgents validates the agents section
 func (c *Config) validateAgents(r *ValidationResult) {
 	for name, agent := range c.Agents {
 		section := fmt.Sprintf("agents.%s", name)
 
-		// Command is required
 		if agent.Command == "" {
 			r.AddError(section, "command", "is required but missing", nil)
-		} else {
-			// Check if command exists in PATH (warning only)
+		} else if name == c.Defaults.DefaultAgent {
 			if _, err := exec.LookPath(agent.Command); err != nil {
 				r.AddWarning(section, "command",
 					fmt.Sprintf("executable %q not found in PATH", agent.Command),
@@ -160,7 +157,6 @@ func (c *Config) validateAgents(r *ValidationResult) {
 			}
 		}
 
-		// Validate InitPrompt template syntax
 		if agent.InitPrompt != "" {
 			if err := validateTemplate(agent.InitPrompt); err != nil {
 				r.AddError(section, "init_prompt",

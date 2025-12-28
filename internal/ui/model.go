@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1273,8 +1274,9 @@ type settingsField struct {
 }
 
 var settingsFields = []settingsField{
-	{"filter_project", "Filter Project", "project", "Show only tickets from a specific project"},
+	{"default_agent", "Default Agent", "agent", "Agent to spawn for new tickets (opencode, claude, aider)"},
 	{"sidebar_visible", "Show Sidebar", "toggle", "Toggle the project sidebar visibility"},
+	{"filter_project", "Filter Project", "project", "Show only tickets from a specific project"},
 }
 
 func (m *Model) handleSettingsMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1385,6 +1387,20 @@ func (m *Model) enterSettingsEdit() (tea.Model, tea.Cmd) {
 		m.notify(field.label + ": " + status)
 		return m, nil
 
+	case "agent":
+		agents := m.getAgentNames()
+		current := m.config.Defaults.DefaultAgent
+		nextAgent := agents[0]
+		for i, a := range agents {
+			if a == current && i+1 < len(agents) {
+				nextAgent = agents[i+1]
+				break
+			}
+		}
+		m.applySettingsValue(field.key, nextAgent)
+		m.notify("Default agent: " + nextAgent)
+		return m, nil
+
 	default:
 		m.settingsEditing = true
 		m.settingsInput.SetValue(m.getSettingsValue(field.key))
@@ -1395,6 +1411,8 @@ func (m *Model) enterSettingsEdit() (tea.Model, tea.Cmd) {
 
 func (m *Model) getSettingsValue(key string) string {
 	switch key {
+	case "default_agent":
+		return m.config.Defaults.DefaultAgent
 	case "filter_project":
 		if m.filterProjectID == "" {
 			return "All Projects"
@@ -1413,11 +1431,16 @@ func (m *Model) getSettingsValue(key string) string {
 
 func (m *Model) applySettingsValue(key, value string) {
 	switch key {
+	case "default_agent":
+		m.config.Defaults.DefaultAgent = value
+		m.config.Save("")
 	case "sidebar_visible":
 		m.sidebarVisible = !m.sidebarVisible
+		m.config.UI.SidebarVisible = m.sidebarVisible
 		if !m.sidebarVisible {
 			m.sidebarFocused = false
 		}
+		m.config.Save("")
 	}
 }
 
@@ -2127,6 +2150,18 @@ func (m *Model) RunningAgentCount() int {
 		}
 	}
 	return count
+}
+
+func (m *Model) getAgentNames() []string {
+	names := make([]string, 0, len(m.config.Agents))
+	for name := range m.config.Agents {
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return []string{"opencode", "claude", "aider"}
+	}
+	sort.Strings(names)
+	return names
 }
 
 const gracefulShutdownTimeout = 3 * time.Second
