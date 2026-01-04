@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -387,12 +388,29 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected, isHovered bool, w
 		priorityBadge = lipgloss.NewStyle().Foreground(pColor).Bold(true).Render(priorityLabels[ticket.Priority])
 	}
 
+	var depBadge string
+	blockedByCount := len(m.globalStore.GetBlockedBy(ticket.ID))
+	blocksCount := len(m.globalStore.GetBlocks(ticket.ID))
+	if blockedByCount > 0 || blocksCount > 0 {
+		depStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		if blockedByCount > 0 && blocksCount > 0 {
+			depBadge = depStyle.Render(fmt.Sprintf("⛓%d↑%d↓", blockedByCount, blocksCount))
+		} else if blockedByCount > 0 {
+			depBadge = depStyle.Render(fmt.Sprintf("⛓%d↑", blockedByCount))
+		} else {
+			depBadge = depStyle.Render(fmt.Sprintf("⛓%d↓", blocksCount))
+		}
+	}
+
 	var headerParts []string
 	if priorityBadge != "" {
 		headerParts = append(headerParts, priorityBadge)
 	}
 	if projectBadge != "" {
 		headerParts = append(headerParts, projectBadge)
+	}
+	if depBadge != "" {
+		headerParts = append(headerParts, depBadge)
 	}
 	if sessionBadge != "" {
 		headerParts = append(headerParts, sessionBadge)
@@ -606,8 +624,9 @@ func (m *Model) contextualHints(hintStyle lipgloss.Style, sep string) string {
 		if m.mode == ModeEditTicket {
 			action = "save"
 		}
-		return hintStyle.Render("Tab") + dimStyle.Render(" next field") + sep +
+		return hintStyle.Render("Tab") + dimStyle.Render(" next") + sep +
 			hintStyle.Render("Ctrl+S") + dimStyle.Render(" "+action) + sep +
+			hintStyle.Render("Ctrl+U/D") + dimStyle.Render(" scroll") + sep +
 			hintStyle.Render("Esc") + dimStyle.Render(" cancel")
 
 	case ModeAgentView:
@@ -780,6 +799,16 @@ func (m *Model) renderSpawning() string {
 	)
 }
 
+const formOverhead = 10 // border(2) + padding(2) + title+blanks(3) + footer+blanks(3)
+
+func (m *Model) formViewportHeight() int {
+	available := m.height - formOverhead
+	if available < 10 {
+		available = 10
+	}
+	return available
+}
+
 func (m *Model) renderTicketForm() string {
 	isEdit := m.mode == ModeEditTicket
 	formTitle := "New Ticket"
@@ -805,7 +834,11 @@ func (m *Model) renderTicketForm() string {
 	priorityLabel := labelStyle
 	worktreeLabel := labelStyle
 	agentLabel := labelStyle
+	blockerLabel := labelStyle
 	projectLabel := labelStyle
+
+	fieldStartLines := make(map[int]int)
+	currentLine := 0
 
 	switch m.ticketFormField {
 	case formFieldTitle:
@@ -822,6 +855,8 @@ func (m *Model) renderTicketForm() string {
 		worktreeLabel = activeLabelStyle
 	case formFieldAgent:
 		agentLabel = activeLabelStyle
+	case formFieldBlockedBy:
+		blockerLabel = activeLabelStyle
 	case formFieldProject:
 		projectLabel = activeLabelStyle
 	}
@@ -840,6 +875,7 @@ func (m *Model) renderTicketForm() string {
 	priorityField := m.renderPrioritySelector()
 	worktreeField := m.renderWorktreeSelector()
 	agentField := m.renderAgentSelector()
+	blockerField := m.renderBlockerSelector()
 	projectField := m.renderProjectSelector()
 
 	titleCharCount := fmt.Sprintf("%d/100", len(m.titleInput.Value()))
@@ -854,7 +890,7 @@ func (m *Model) renderTicketForm() string {
 	focusIndicator := lipgloss.NewStyle().Foreground(colorTeal).Render("▸ ")
 	noFocus := "  "
 
-	titleFocus, descFocus, branchFocus, labelsFocus, priorityFocus, worktreeFocus, agentFocus, projectFocus := noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus
+	titleFocus, descFocus, branchFocus, labelsFocus, priorityFocus, worktreeFocus, agentFocus, blockerFocus, projectFocus := noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus
 	switch m.ticketFormField {
 	case formFieldTitle:
 		titleFocus = focusIndicator
@@ -870,47 +906,157 @@ func (m *Model) renderTicketForm() string {
 		worktreeFocus = focusIndicator
 	case formFieldAgent:
 		agentFocus = focusIndicator
+	case formFieldBlockedBy:
+		blockerFocus = focusIndicator
 	case formFieldProject:
 		projectFocus = focusIndicator
 	}
 
-	content := titleStyle.Render("◈ "+formTitle) + "\n\n" +
-		titleFocus + titleLabel.Render("Title") + "  " + titleCharStyle.Render(titleCharCount) + "\n" +
-		"  " + descriptionStyle.Render("Brief summary of the task") + "\n" +
-		"  " + m.titleInput.View() + "\n\n" +
-		descFocus + descLabel.Render("Description") + "\n" +
-		"  " + descriptionStyle.Render("Details, context, or acceptance criteria") + "\n" +
-		"  " + m.descInput.View() + "\n\n" +
-		branchFocus + branchLabel.Render("Branch") + "\n" +
-		"  " + branchDesc + "\n" +
-		"  " + branchField + "\n\n" +
-		labelsFocus + labelsLabel.Render("Labels") + "\n" +
-		"  " + descriptionStyle.Render("Comma-separated tags (e.g. bug, urgent)") + "\n" +
-		"  " + m.labelsInput.View() + "\n\n" +
-		priorityFocus + priorityLabel.Render("Priority") + "\n" +
-		"  " + descriptionStyle.Render("1 = highest, 5 = lowest") + "\n" +
-		"  " + priorityField + "\n\n" +
-		worktreeFocus + worktreeLabel.Render("Worktree") + "\n" +
-		"  " + descriptionStyle.Render("Use isolated worktree or work in main repo") + "\n" +
-		"  " + worktreeField + "\n\n" +
-		agentFocus + agentLabel.Render("Agent") + "\n" +
-		"  " + descriptionStyle.Render("AI agent to use for this ticket") + "\n" +
-		"  " + agentField + "\n"
+	var lines []string
+
+	fieldStartLines[formFieldTitle] = currentLine
+	lines = append(lines, titleFocus+titleLabel.Render("Title")+"  "+titleCharStyle.Render(titleCharCount))
+	lines = append(lines, "  "+descriptionStyle.Render("Brief summary of the task"))
+	lines = append(lines, "  "+m.titleInput.View())
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldDescription] = currentLine
+	lines = append(lines, descFocus+descLabel.Render("Description"))
+	lines = append(lines, "  "+descriptionStyle.Render("Details, context, or acceptance criteria"))
+	descLines := strings.Split(m.descInput.View(), "\n")
+	for _, dl := range descLines {
+		lines = append(lines, "  "+dl)
+	}
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldBranch] = currentLine
+	lines = append(lines, branchFocus+branchLabel.Render("Branch"))
+	lines = append(lines, "  "+branchDesc)
+	lines = append(lines, "  "+branchField)
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldLabels] = currentLine
+	lines = append(lines, labelsFocus+labelsLabel.Render("Labels"))
+	lines = append(lines, "  "+descriptionStyle.Render("Comma-separated tags (e.g. bug, urgent)"))
+	lines = append(lines, "  "+m.labelsInput.View())
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldPriority] = currentLine
+	lines = append(lines, priorityFocus+priorityLabel.Render("Priority"))
+	lines = append(lines, "  "+descriptionStyle.Render("1 = highest, 5 = lowest"))
+	lines = append(lines, "  "+priorityField)
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldWorktree] = currentLine
+	lines = append(lines, worktreeFocus+worktreeLabel.Render("Worktree"))
+	lines = append(lines, "  "+descriptionStyle.Render("Use isolated worktree or work in main repo"))
+	lines = append(lines, "  "+worktreeField)
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldAgent] = currentLine
+	lines = append(lines, agentFocus+agentLabel.Render("Agent"))
+	lines = append(lines, "  "+descriptionStyle.Render("AI agent to use for this ticket"))
+	lines = append(lines, "  "+agentField)
+	lines = append(lines, "")
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldBlockedBy] = currentLine
+	lines = append(lines, blockerFocus+blockerLabel.Render("Blocked By"))
+	lines = append(lines, "  "+descriptionStyle.Render("Tickets that must complete before this one"))
+	blockerLines := strings.Split(blockerField, "\n")
+	for _, bl := range blockerLines {
+		lines = append(lines, bl)
+	}
+	currentLine = len(lines)
 
 	if !isEdit {
-		content += "\n" + projectFocus + projectLabel.Render("Project") + "\n" +
-			"  " + descriptionStyle.Render("Repository where this ticket belongs") + "\n" +
-			"  " + projectField + "\n"
+		lines = append(lines, "")
+		currentLine = len(lines)
+		fieldStartLines[formFieldProject] = currentLine
+		lines = append(lines, projectFocus+projectLabel.Render("Project"))
+		lines = append(lines, "  "+descriptionStyle.Render("Repository where this ticket belongs"))
+		projectLines := strings.Split(projectField, "\n")
+		for _, pl := range projectLines {
+			lines = append(lines, pl)
+		}
 	}
 
-	content += "\n  " + lipgloss.NewStyle().Foreground(colorTeal).Render("[Tab]") + dimStyle.Render(" Next field    ") +
-		lipgloss.NewStyle().Foreground(colorGreen).Render("[Ctrl+S]") + dimStyle.Render(" "+actionText+"    ") +
+	m.formFieldLines = fieldStartLines
+
+	viewportHeight := m.formViewportHeight()
+	totalLines := len(lines)
+	needsScroll := totalLines > viewportHeight
+
+	if needsScroll {
+		if startLine, ok := fieldStartLines[m.ticketFormField]; ok {
+			if startLine < m.formScrollOffset {
+				m.formScrollOffset = startLine
+			}
+			if startLine >= m.formScrollOffset+viewportHeight-2 {
+				m.formScrollOffset = startLine - viewportHeight + 4
+			}
+		}
+		maxOffset := totalLines - viewportHeight
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.formScrollOffset > maxOffset {
+			m.formScrollOffset = maxOffset
+		}
+		if m.formScrollOffset < 0 {
+			m.formScrollOffset = 0
+		}
+	} else {
+		m.formScrollOffset = 0
+	}
+
+	var visibleLines []string
+	endLine := m.formScrollOffset + viewportHeight
+	if endLine > totalLines {
+		endLine = totalLines
+	}
+
+	scrollIndicatorStyle := lipgloss.NewStyle().Foreground(colorTeal).Bold(true)
+	if needsScroll && m.formScrollOffset > 0 {
+		aboveCount := m.formScrollOffset
+		visibleLines = append(visibleLines, scrollIndicatorStyle.Render(fmt.Sprintf("  ▲ %d more above", aboveCount)))
+	}
+
+	for i := m.formScrollOffset; i < endLine; i++ {
+		visibleLines = append(visibleLines, lines[i])
+	}
+
+	if needsScroll && endLine < totalLines {
+		belowCount := totalLines - endLine
+		visibleLines = append(visibleLines, scrollIndicatorStyle.Render(fmt.Sprintf("  ▼ %d more below", belowCount)))
+	}
+
+	content := titleStyle.Render("◈ "+formTitle) + "\n\n" + strings.Join(visibleLines, "\n")
+
+	footerHints := lipgloss.NewStyle().Foreground(colorTeal).Render("[Tab]") + dimStyle.Render(" Next  ") +
+		lipgloss.NewStyle().Foreground(colorGreen).Render("[Ctrl+S]") + dimStyle.Render(" "+actionText+"  ") +
 		lipgloss.NewStyle().Foreground(colorMuted).Render("[Esc]") + dimStyle.Render(" Cancel")
+	if needsScroll {
+		footerHints += "  " + dimStyle.Render("Scroll: wheel or Ctrl+U/D")
+	}
+	content += "\n\n  " + footerHints
+
+	formWidth := min(60, m.width-4)
+	if formWidth < 40 {
+		formWidth = 40
+	}
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorGreen).
 		Padding(1, 2).
+		Width(formWidth).
 		Render(content)
 }
 
@@ -994,6 +1140,95 @@ func (m *Model) renderAgentSelector() string {
 	}
 
 	return strings.Join(parts, "  ") + hint
+}
+
+func (m *Model) renderBlockerSelector() string {
+	if len(m.blockerCandidates) == 0 {
+		return dimStyle.Render("No other tickets available")
+	}
+
+	if m.ticketFormField != formFieldBlockedBy {
+		count := len(m.selectedBlockers)
+		if count == 0 {
+			return dimStyle.Render("None selected")
+		}
+		var names []string
+		for id := range m.selectedBlockers {
+			if t, _ := m.globalStore.Get(id); t != nil {
+				name := t.Title
+				if len(name) > 20 {
+					name = name[:18] + ".."
+				}
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return lipgloss.NewStyle().Foreground(colorTeal).Render(strings.Join(names, ", "))
+	}
+
+	var lines []string
+	lines = append(lines, m.blockerFilterInput.View())
+	lines = append(lines, "")
+
+	visibleCandidates := m.getFilteredBlockerCandidates()
+	maxVisible := 5
+
+	for i, ticket := range visibleCandidates {
+		if i >= maxVisible {
+			remaining := len(visibleCandidates) - maxVisible
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... and %d more", remaining)))
+			break
+		}
+
+		name := ticket.Title
+		if len(name) > 30 {
+			name = name[:28] + ".."
+		}
+
+		proj := m.globalStore.GetProjectForTicket(ticket)
+		projName := ""
+		if proj != nil {
+			projName = proj.Name
+			if len(projName) > 10 {
+				projName = projName[:8] + ".."
+			}
+		}
+
+		isSelected := m.selectedBlockers[ticket.ID]
+		isHovered := i == m.blockerListIndex
+
+		checkbox := "[ ] "
+		checkboxStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		if isSelected {
+			checkbox = "[✓] "
+			checkboxStyle = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
+		}
+
+		cursor := "  "
+		nameStyle := lipgloss.NewStyle().Foreground(colorText)
+		projStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+		if isHovered {
+			cursor = lipgloss.NewStyle().Foreground(colorTeal).Render("▸ ")
+			nameStyle = nameStyle.Bold(true).Foreground(colorTeal)
+			projStyle = projStyle.Foreground(colorSubtext)
+		}
+
+		line := cursor + checkboxStyle.Render(checkbox) + nameStyle.Render(name)
+		if projName != "" {
+			line += "  " + projStyle.Render("❨"+projName+"❩")
+		}
+		lines = append(lines, line)
+	}
+
+	if len(visibleCandidates) == 0 {
+		lines = append(lines, dimStyle.Render("No matching tickets"))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("↑↓ navigate  Space/Enter toggle  Tab next"))
+
+	return strings.Join(lines, "\n  ")
 }
 
 func (m *Model) renderWithOverlay(overlay string) string {
@@ -1134,6 +1369,31 @@ func (m *Model) renderAgentView() string {
 		header = header + "  " + durationBadge
 	}
 
+	var depsLine string
+	if ticket != nil {
+		blockedBy := m.globalStore.GetBlockedBy(ticket.ID)
+		blocks := m.globalStore.GetBlocks(ticket.ID)
+		if len(blockedBy) > 0 || len(blocks) > 0 {
+			depStyle := lipgloss.NewStyle().Foreground(colorMuted)
+			var depParts []string
+			if len(blockedBy) > 0 {
+				var names []string
+				for _, t := range blockedBy {
+					names = append(names, t.Title)
+				}
+				depParts = append(depParts, "⛓↑ "+strings.Join(names, ", "))
+			}
+			if len(blocks) > 0 {
+				var names []string
+				for _, t := range blocks {
+					names = append(names, t.Title)
+				}
+				depParts = append(depParts, "⛓↓ "+strings.Join(names, ", "))
+			}
+			depsLine = depStyle.Render(strings.Join(depParts, "  "))
+		}
+	}
+
 	activePaneCount := 0
 	paneIndex := 0
 	for id, p := range m.panes {
@@ -1160,6 +1420,11 @@ func (m *Model) renderAgentView() string {
 	b.WriteString(strings.Repeat(" ", spacing))
 	b.WriteString(hints)
 	b.WriteString("\n")
+
+	if depsLine != "" {
+		b.WriteString(depsLine)
+		b.WriteString("\n")
+	}
 
 	b.WriteString(pane.View())
 
