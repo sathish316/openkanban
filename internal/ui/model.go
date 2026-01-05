@@ -62,6 +62,8 @@ const (
 
 type Model struct {
 	config *config.Config
+	theme  config.Theme
+	colors uiColors
 
 	globalStore      *project.GlobalTicketStore
 	projectRegistry  *project.ProjectRegistry
@@ -139,6 +141,7 @@ type Model struct {
 	settingsIndex   int
 	settingsEditing bool
 	settingsInput   textinput.Model
+	themeListIndex  int
 
 	filterInput textinput.Model
 	filterQuery string
@@ -217,8 +220,11 @@ func NewModel(cfg *config.Config, globalStore *project.GlobalTicketStore, projec
 		}
 	}
 
+	theme := cfg.GetTheme()
 	m := &Model{
 		config:             cfg,
+		theme:              theme,
+		colors:             newUIColors(theme),
 		globalStore:        globalStore,
 		projectRegistry:    projectRegistry,
 		columns:            board.DefaultColumns(),
@@ -1616,6 +1622,7 @@ type settingsField struct {
 }
 
 var settingsFields = []settingsField{
+	{"theme", "Theme", "theme", "Color theme for the UI"},
 	{"default_agent", "Default Agent", "agent", "Agent to spawn for new tickets (opencode, claude, aider)"},
 	{"confirm_quit", "Confirm Quit", "toggle", "Prompt before quitting with running agents"},
 	{"branch_prefix", "Branch Prefix", "text", "Prefix for auto-generated branch names (e.g. task/, feature/)"},
@@ -1658,6 +1665,10 @@ func (m *Model) handleSettingsEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	}
 
+	if field.kind == "theme" {
+		return m.handleThemeNav(msg)
+	}
+
 	switch msg.String() {
 	case "enter":
 		m.applySettingsValue(field.key, m.settingsInput.Value())
@@ -1674,6 +1685,35 @@ func (m *Model) handleSettingsEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.settingsInput, cmd = m.settingsInput.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) handleThemeNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	themes := config.ThemeNames()
+	if len(themes) == 0 {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "j", "down":
+		m.themeListIndex++
+		if m.themeListIndex >= len(themes) {
+			m.themeListIndex = 0
+		}
+		m.applySettingsValue("theme", themes[m.themeListIndex])
+	case "k", "up":
+		m.themeListIndex--
+		if m.themeListIndex < 0 {
+			m.themeListIndex = len(themes) - 1
+		}
+		m.applySettingsValue("theme", themes[m.themeListIndex])
+	case "enter":
+		m.settingsEditing = false
+		m.notify("Theme: " + themes[m.themeListIndex])
+	case "esc":
+		m.settingsEditing = false
+	}
+
+	return m, nil
 }
 
 func (m *Model) handleSettingsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -1734,6 +1774,19 @@ func (m *Model) enterSettingsEdit() (tea.Model, tea.Cmd) {
 		m.notify(field.label + ": " + status)
 		return m, nil
 
+	case "theme":
+		themes := config.ThemeNames()
+		current := m.config.UI.Theme
+		m.themeListIndex = 0
+		for i, t := range themes {
+			if t == current {
+				m.themeListIndex = i
+				break
+			}
+		}
+		m.settingsEditing = true
+		return m, nil
+
 	case "agent":
 		agents := m.getAgentNames()
 		current := m.config.Defaults.DefaultAgent
@@ -1766,6 +1819,8 @@ func (m *Model) enterSettingsEdit() (tea.Model, tea.Cmd) {
 
 func (m *Model) getSettingsValue(key string) string {
 	switch key {
+	case "theme":
+		return m.config.UI.Theme
 	case "default_agent":
 		return m.config.Defaults.DefaultAgent
 	case "confirm_quit":
@@ -1807,6 +1862,11 @@ func (m *Model) getSettingsValue(key string) string {
 
 func (m *Model) applySettingsValue(key, value string) {
 	switch key {
+	case "theme":
+		m.config.UI.Theme = value
+		m.theme = m.config.GetTheme()
+		m.colors = newUIColors(m.theme)
+		m.config.Save("")
 	case "default_agent":
 		m.config.Defaults.DefaultAgent = value
 		m.config.Save("")
