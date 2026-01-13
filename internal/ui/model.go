@@ -2500,6 +2500,11 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Start opencode server on-demand if spawning opencode agent
+	if agentType == "opencode" {
+		_ = m.opencodeServer.Start() // Best effort, ignore errors
+	}
+
 	m.mode = ModeSpawning
 	m.spawningTicketID = ticket.ID
 	m.spawningAgent = agentType
