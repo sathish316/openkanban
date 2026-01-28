@@ -78,7 +78,6 @@ type Project struct {
 }
 
 type ProjectSettings struct {
-    DefaultAgent     string `json:"default_agent,omitempty"`
     AutoSpawnAgent   bool   `json:"auto_spawn_agent"`
     AutoCreateBranch bool   `json:"auto_create_branch"`
     BranchPrefix     string `json:"branch_prefix,omitempty"`
@@ -169,7 +168,6 @@ Stored in `~/.config/openkanban/projects.json`:
       "created_at": "2025-01-15T10:00:00Z",
       "updated_at": "2025-01-16T14:30:00Z",
       "settings": {
-        "default_agent": "opencode",
         "auto_spawn_agent": true,
         "auto_create_branch": true,
         "branch_prefix": "task/",

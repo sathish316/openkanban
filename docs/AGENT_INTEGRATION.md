@@ -107,8 +107,11 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
         }
     }
 
-    // Get agent config
-    agentType := proj.Settings.DefaultAgent
+    // Get agent config (ticket override -> global default)
+    agentType := ticket.AgentType
+    if agentType == "" {
+        agentType = m.config.Defaults.DefaultAgent
+    }
     agentCfg := m.config.Agents[agentType]
 
     // Create terminal pane
