@@ -1635,7 +1635,7 @@ type settingsField struct {
 
 var settingsFields = []settingsField{
 	{"theme", "Theme", "theme", "Color theme for the UI"},
-	{"default_agent", "Default Agent", "agent", "Agent to spawn for new tickets (opencode, claude, aider)"},
+	{"default_agent", "Default Agent", "agent", "Agent to spawn for new tickets (claude, codex, rovodev, opencode, gemini, aider)"},
 	{"confirm_quit", "Confirm Quit", "toggle", "Prompt before quitting with running agents"},
 	{"branch_prefix", "Branch Prefix", "text", "Prefix for auto-generated branch names (e.g. task/, feature/)"},
 	{"delete_worktree", "Delete Worktree", "toggle", "Remove git worktree when deleting tickets"},
@@ -2512,10 +2512,10 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 	m.spawningTicketID = ticket.ID
 	m.spawningAgent = agentType
 
-	return m, tea.Batch(m.spinner.Tick, m.prepareSpawn(ticket, proj, agentCfg))
+	return m, tea.Batch(m.spinner.Tick, m.prepareSpawn(ticket, proj, agentType, agentCfg))
 }
 
-func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentCfg config.AgentConfig) tea.Cmd {
+func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentName string, agentCfg config.AgentConfig) tea.Cmd {
 	ticketID := ticket.ID
 	worktreePath := ticket.WorktreePath
 	branchName := ticket.BranchName
@@ -2523,13 +2523,8 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 	useWorktree := ticket.UseWorktree
 	width, height := m.width, m.height-2
 
-	agentType := agentCfg.Command
-	if strings.Contains(agentType, "/") {
-		agentType = filepath.Base(agentType)
-	}
-
 	agentPort := ticket.AgentPort
-	if agentPort == 0 && agentType == "opencode" {
+	if agentPort == 0 && agentName == "opencode" {
 		agentPort = m.allocateAgentPort()
 		ticket.AgentPort = agentPort
 		m.saveTicket(ticket)
@@ -2596,9 +2591,9 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 		args := make([]string, len(agentCfg.Args))
 		copy(args, agentCfg.Args)
 
-		promptTemplate := cfg.GetEffectiveInitPrompt(agentType)
+		promptTemplate := cfg.GetEffectiveInitPrompt(agentName)
 
-		switch agentType {
+		switch agentName {
 		case "claude":
 			if isNewSession && promptTemplate != "" {
 				prompt := agent.BuildContextPrompt(promptTemplate, ticket)
@@ -2681,6 +2676,34 @@ func (m *Model) prepareSpawn(ticket *board.Ticket, proj *project.Project, agentC
 				prompt := agent.BuildContextPrompt(promptTemplate, ticket)
 				if prompt != "" {
 					args = append(args, prompt)
+				}
+			}
+			return spawnReadyMsg{
+				ticketID:     ticketID,
+				pane:         pane,
+				command:      command,
+				args:         args,
+				worktreePath: worktreePath,
+				branchName:   branchName,
+				baseBranch:   baseBranch,
+			}
+		case "rovodev":
+			command := agentCfg.Command
+			// Force RovoDev to non-interactive run mode. TUI mode does not
+			// reliably accept initial prompt/context injection.
+			switch {
+			case len(args) >= 2 && args[0] == "rovodev":
+				args = append([]string{"rovodev", "run"}, args[2:]...)
+			case len(args) == 1 && args[0] == "rovodev":
+				args = []string{"rovodev", "run"}
+			case len(args) == 0:
+				args = []string{"rovodev", "run"}
+			}
+
+			if isNewSession && promptTemplate != "" {
+				prompt := agent.BuildContextPrompt(promptTemplate, ticket)
+				if prompt != "" {
+					args = append(args, "--yolo", prompt)
 				}
 			}
 			return spawnReadyMsg{
@@ -2855,7 +2878,7 @@ func (m *Model) getAgentNames() []string {
 		names = append(names, name)
 	}
 	if len(names) == 0 {
-		return []string{"opencode", "claude", "gemini", "codex", "aider"}
+		return []string{"claude", "codex", "rovodev", "opencode", "gemini", "aider"}
 	}
 	sort.Strings(names)
 	return names

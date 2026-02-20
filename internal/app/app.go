@@ -47,9 +47,10 @@ func Run(cfg *config.Config, filterPath, version string) error {
 	// Only auto-start server if default agent is opencode
 	if cfg.Defaults.DefaultAgent == "opencode" {
 		if err := opencodeServer.Start(); err != nil {
-			return fmt.Errorf("failed to start opencode server: %w", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to start opencode server: %v\n", err)
+		} else {
+			defer opencodeServer.Stop()
 		}
-		defer opencodeServer.Stop()
 	}
 
 	updateChecker := update.NewChecker(version)
